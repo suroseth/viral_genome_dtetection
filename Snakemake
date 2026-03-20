@@ -1,0 +1,153 @@
+hell.executable("/bin/bash")
+
+configfile: "config.yaml"
+
+
+SAMPLES = [line.strip() for line in open("samplesheet_sub3.txt")]
+
+
+rule all:
+    input:
+        expand(config["viral_reads"] + "/{sample}_1.fastq", sample=SAMPLES),
+        expand(config["viral_reads"] + "/{sample}_2.fastq", sample=SAMPLES),
+        config["qc"] + "/multiqc_report.html"
+
+rule fastqc_pretrim:
+    input:
+        r1=config["merged_reads"] + "/{sample}_1.fastq.gz",
+        r2=config["merged_reads"] + "/{sample}_2.fastq.gz"
+    output:
+        r1=config["qc"] + "/{sample}_1_fastqc.html",
+        r2=config["qc"] + "/{sample}_2_fastqc.html"
+    threads: 2
+    shell:
+        """
+        fastqc -t {threads} {input.r1} {input.r2} -o {config["qc"]}
+        """
+
+
+rule multiqc_pretrim:
+    input:
+        expand(config["qc"] + "/{sample}_1_fastqc.html", sample=SAMPLES),
+        expand(config["qc"] + "/{sample}_2_fastqc.html", sample=SAMPLES)
+    output:
+        config["qc"] + "/multiqc_report.html"
+    shell:
+        """
+        multiqc {config["qc"]} -o {config["qc"]}
+        """
+
+
+rule trim_reads:
+    input:
+        r1=config["merged_reads"] + "/{sample}_1.fastq.gz",
+        r2=config["merged_reads"] + "/{sample}_2.fastq.gz"
+    output:
+        r1=config["trimmed_reads"] + "/{sample}_1_val_1.fq.gz",
+        r2=config["trimmed_reads"] + "/{sample}_2_val_2.fq.gz"
+    threads: 4
+    shell:
+        """
+        trim_galore --paired --quality 30 --length 36 --cores {threads} \
+        -o {config["trimmed_reads"]} \
+        {input.r1} {input.r2}
+        """
+
+
+#rule star_alignment:
+#    input:
+#        r1=config["trimmed_reads"] + "/{sample}_1_val_1.fq.gz",
+#        r2=config["trimmed_reads"] + "/{sample}_2_val_2.fq.gz"
+#    output:
+#        r1=config["nohuman_trimmed_reads"] + "/{sample}_1_val_1.fq.gz",
+#        r2=config["nohuman_trimmed_reads"] + "/{sample}_2_val_2.fq.gz"
+#    shell:
+#        """
+#        STAR \
+#        --genomeDir config[star_index] \
+#       --readFilesIn {input.r1} {input.r2} \
+#       --readFilesCommand zcat \
+#       --runThreadN 16 \
+#       --outSAMtype BAM SortedByCoordinate
+#        """
+
+
+rule align_reads:
+    input:
+        r1=config["trimmed_reads"] + "/{sample}_1_val_1.fq.gz",
+        r2=config["trimmed_reads"] + "/{sample}_2_val_2.fq.gz"
+    output:
+        config["alignment_out"] + "/{sample}.aligned.sorted.bam"
+    threads: 12
+    shell:
+        """
+        hisat2 -x {config[hisat2_index]} \
+        -1 {input.r1} \
+        -2 {input.r2} \
+        -p {threads} | \
+        samtools sort -@ {threads} -O BAM -o {output}
+        """
+
+rule remove_human_reads:
+    input:
+        config["alignment_out"] + "/{sample}.aligned.sorted.bam"
+    output:
+        config["nohuman_reads"] + "/{sample}.unmapped.bam"
+    shell:
+        """
+        samtools view -b -f 12 -F 256 {input} -o {output}
+        """
+
+
+rule convert_bam_fastq:
+    input:
+        bam=config["nohuman_reads"] + "/{sample}.unmapped.bam"
+    output:
+        r1 = config["nohuman_fastq"] + "/{sample}_1.fastq",
+        r2 = config["nohuman_fastq"] + "/{sample}_2.fastq"
+    shell:
+        """
+        bedtools bamtofastq -i {input} -fq {output.r1} -fq2 {output.r2}
+        """
+
+
+rule taxonomic_classification:
+    input:
+        r1 = config["nohuman_fastq"] + "/{sample}_1.fastq"
+        r2 = config["nohuman_fastq"] + "/{sample}_2.fastq"
+    output:
+        r1 = config["viral_report"] + "/{sample}_report.txt"
+        r2 = config["viral_report"] + "/{sample}_output.txt"
+    shell:
+        """
+        kraken2 \
+        --db kraken2_viral_db \
+        --paired {input.r1} {input.r2} \
+        --report {output.r1} \
+        --output {output.r2}
+        """
+
+
+rule viral_read_extraction:
+    input:
+        r1 = config["nohuman_fastq"] + "/{sample}_1.fastq",
+        r2 = config["nohuman_fastq"] + "/{sample}_2.fastq",
+        r3 = config["viral_report"] + "/{sample}_report.txt"
+    output:
+        r1 = config["viral_reads"] + "/{sample}_1.fastq",
+        r2 = config["viral_reads"] + "/{sample}_2.fastq"
+
+    shell:
+        """
+        extract_kraken_reads.py \
+        -k {input.r3} \
+        -s {input.r1} \
+        -s2 {input.r2} \
+        -t 10239 \
+        -o {output.r1} \
+        -o2 {output.r2}
+        """
+
+
+
+

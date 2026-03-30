@@ -1,0 +1,74 @@
+shell.executable("/bin/bash")
+
+configfile: "config.yaml"
+
+SAMPLES = [line.strip() for line in open("samplesheet_gse125903.txt")]
+
+
+rule all:
+    input:
+        config["qc"] + "/multiqc_report.html",
+        expand(config["alignment_out"] + "/{sample}.aligned.sorted.bam", sample=SAMPLES)
+
+
+rule fastqc_pretrim:
+    input:
+        r1=config["merged_reads"] + "/{sample}_1.fastq.gz",
+        r2=config["merged_reads"] + "/{sample}_2.fastq.gz"
+    output:
+        r1=config["qc"] + "/{sample}_1_fastqc.html",
+        r2=config["qc"] + "/{sample}_2_fastqc.html"
+    threads: 2
+    params:
+        dir = config["qc"]
+    shell:
+        """
+        fastqc -t {threads} {input.r1} {input.r2} -o {params.dir}
+        """
+
+
+rule multiqc_pretrim:
+    input:
+        expand(config["qc"] + "/{sample}_1_fastqc.html", sample=SAMPLES),
+        expand(config["qc"] + "/{sample}_2_fastqc.html", sample=SAMPLES)
+    output:
+        config["qc"] + "/multiqc_report.html"
+    params:
+        dir = config["qc"]
+    shell:
+        """
+        multiqc {params.dir} -o {params.dir}
+        """
+
+
+rule trim_reads:
+    input:
+        r1=config["merged_reads"] + "/{sample}_1.fastq.gz",
+        r2=config["merged_reads"] + "/{sample}_2.fastq.gz"
+    output:
+        r1=config["trimmed_reads"] + "/{sample}_1_val_1.fq.gz",
+        r2=config["trimmed_reads"] + "/{sample}_2_val_2.fq.gz"
+    threads: 8
+    shell:
+        """
+        trim_galore --paired --quality 20 --length 36 --cores {threads} \
+        -o {config[trimmed_reads]} \
+        {input.r1} {input.r2}
+        """
+
+
+rule align_reads:
+    input:
+        r1=config["trimmed_reads"] + "/{sample}_1_val_1.fq.gz",
+        r2=config["trimmed_reads"] + "/{sample}_2_val_2.fq.gz"
+    output:
+        config["alignment_out"] + "/{sample}.aligned.sorted.bam"
+    threads: 8
+    shell:
+        """
+        hisat2 -x {config[hisat2_index]} \
+        -1 {input.r1} \
+        -2 {input.r2} \
+        -p {threads} | \
+        samtools sort -@ {threads} -O BAM -o {output}
+        """
